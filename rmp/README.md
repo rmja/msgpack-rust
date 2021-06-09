@@ -16,6 +16,13 @@ To use `rmp`, first add this to your `Cargo.toml`:
 rmp = "^0.8"
 ```
 
+or, if in `no_std` environment:
+
+```toml
+[dependencies.rmp]
+rmp = { version: "^0.8", default-features = false }
+```
+
 ### Features
 
 - **Convenient API**

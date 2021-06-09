@@ -107,7 +107,7 @@ fn from_unsigned_u8_incomplete_read_int() {
     let buf = [0xcc];
     let mut cur = Cursor::new(&buf[..]);
 
-    read_int::<u64, _>(&mut cur).err().unwrap();
+    read_int::<u64, _, _>(&mut cur).err().unwrap();
     assert_eq!(1, cur.position());
 }
 
@@ -128,7 +128,7 @@ fn from_unsigned_u16_incomplete_read_int() {
     let buf = [0xcd];
     let mut cur = Cursor::new(&buf[..]);
 
-    read_int::<u64, _>(&mut cur).err().unwrap();
+    read_int::<u64, _, _>(&mut cur).err().unwrap();
     assert_eq!(1, cur.position());
 }
 
@@ -149,7 +149,7 @@ fn from_unsigned_u32_incomplete_read_int() {
     let buf = [0xce];
     let mut cur = Cursor::new(&buf[..]);
 
-    read_int::<u64, _>(&mut cur).err().unwrap();
+    read_int::<u64, _, _>(&mut cur).err().unwrap();
     assert_eq!(1, cur.position());
 }
 
@@ -173,7 +173,7 @@ fn from_unsigned_u64_incomplete_read_int() {
     let buf = [0xcf];
     let mut cur = Cursor::new(&buf[..]);
 
-    read_int::<u64, _>(&mut cur).err().unwrap();
+    read_int::<u64, _, _>(&mut cur).err().unwrap();
     assert_eq!(1, cur.position());
 }
 
@@ -182,7 +182,7 @@ fn from_unsigned_invalid_marker_read_int() {
     let buf = [0xc0];
     let mut cur = Cursor::new(&buf[..]);
 
-    match read_int::<u64, _>(&mut cur) {
+    match read_int::<u64, _, _>(&mut cur) {
         Err(NumValueReadError::TypeMismatch(Marker::Null)) => (),
         other => panic!("unexpected result: {:?}", other)
     }
@@ -194,7 +194,7 @@ fn from_unsigned_invalid_unknown_marker_read_int() {
     let buf = [0xc1];
     let mut cur = Cursor::new(&buf[..]);
 
-    match read_int::<u64, _>(&mut cur) {
+    match read_int::<u64, _, _>(&mut cur) {
         Err(NumValueReadError::TypeMismatch(Marker::Reserved)) => (),
         other => panic!("unexpected result: {:?}", other)
     }

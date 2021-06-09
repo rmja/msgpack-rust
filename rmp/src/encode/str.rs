@@ -1,7 +1,4 @@
-use std::io::Write;
-
-use crate::Marker;
-use crate::encode::ValueWriteError;
+use crate::{Marker, adapters::{Write, WriteError}, encode::ValueWriteError};
 use super::{write_marker, write_data_u8, write_data_u16, write_data_u32};
 
 /// Encodes and attempts to write the most efficient string length implementation to the given
@@ -11,7 +8,7 @@ use super::{write_marker, write_data_u8, write_data_u16, write_data_u32};
 ///
 /// This function will return `ValueWriteError` on any I/O error occurred while writing either the
 /// marker or the data.
-pub fn write_str_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError> {
+pub fn write_str_len<W: Write<E>, E: WriteError>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError<E>> {
     if len < 32 {
         write_marker(wr, Marker::FixStr(len as u8))?;
         Ok(Marker::FixStr(len as u8))
@@ -38,7 +35,7 @@ pub fn write_str_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWrit
 /// This function will return `ValueWriteError` on any I/O error occurred while writing either the
 /// marker or the data.
 // TODO: Docs, range check, example, visibility.
-pub fn write_str<W: Write>(wr: &mut W, data: &str) -> Result<(), ValueWriteError> {
+pub fn write_str<W: Write<E>, E: WriteError>(wr: &mut W, data: &str) -> Result<(), ValueWriteError<E>> {
     write_str_len(wr, data.len() as u32)?;
-    wr.write_all(data.as_bytes()).map_err(ValueWriteError::InvalidDataWrite)
+    wr.write(data.as_bytes()).map_err(ValueWriteError::InvalidDataWrite)
 }

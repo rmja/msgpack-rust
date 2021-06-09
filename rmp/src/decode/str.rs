@@ -1,24 +1,23 @@
-use std::error;
-use std::io::{self, Read};
-use std::fmt::{self, Display, Formatter};
-use std::str::{Utf8Error, from_utf8};
+use core::str::{Utf8Error, from_utf8};
+use core::fmt;
 
-use crate::Marker;
-use super::{read_marker, read_data_u8, read_data_u16, read_data_u32, Error, ValueReadError};
+use crate::{Marker, adapters::{Read, ReadError}};
+use super::{read_marker, read_data_u8, read_data_u16, read_data_u32, ValueReadError};
 
 #[derive(Debug)]
-pub enum DecodeStringError<'a> {
-    InvalidMarkerRead(Error),
-    InvalidDataRead(Error),
+pub enum DecodeStringError<'a, E: ReadError> {
+    InvalidMarkerRead(E),
+    InvalidDataRead(E),
     TypeMismatch(Marker),
     /// The given buffer is not large enough to accumulate the specified amount of bytes.
     BufferSizeTooSmall(u32),
     InvalidUtf8(&'a [u8], Utf8Error),
 }
 
-impl<'a> error::Error for DecodeStringError<'a> {
+#[cfg(feature = "std")]
+impl<'a, E: ReadError + std::error::Error> std::error::Error for DecodeStringError<'a, E> {
     #[cold]
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             DecodeStringError::InvalidMarkerRead(ref err) |
             DecodeStringError::InvalidDataRead(ref err) => Some(err),
@@ -29,16 +28,16 @@ impl<'a> error::Error for DecodeStringError<'a> {
     }
 }
 
-impl<'a> Display for DecodeStringError<'a> {
+impl<'a, E: ReadError> fmt::Display for DecodeStringError<'a, E> {
     #[cold]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.write_str("error while decoding string")
     }
 }
 
-impl<'a> From<ValueReadError> for DecodeStringError<'a> {
+impl<'a, E: ReadError> From<ValueReadError<E>> for DecodeStringError<'a, E> {
     #[cold]
-    fn from(err: ValueReadError) -> DecodeStringError<'a> {
+    fn from(err: ValueReadError<E>) -> DecodeStringError<'a, E> {
         match err {
             ValueReadError::InvalidMarkerRead(err) => DecodeStringError::InvalidMarkerRead(err),
             ValueReadError::InvalidDataRead(err) => DecodeStringError::InvalidDataRead(err),
@@ -61,13 +60,11 @@ impl<'a> From<ValueReadError> for DecodeStringError<'a> {
 /// It also returns `ValueReadError::TypeMismatch` if the actual type is not equal with the
 /// expected one, indicating you with the actual type.
 #[inline]
-pub fn read_str_len<R: Read>(rd: &mut R) -> Result<u32, ValueReadError> {
+pub fn read_str_len<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u32, ValueReadError<E>> {
     Ok(read_str_len_with_nread(rd)?.0)
 }
 
-fn read_str_len_with_nread<R>(rd: &mut R) -> Result<(u32, usize), ValueReadError>
-    where R: Read
-{
+fn read_str_len_with_nread<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<(u32, usize), ValueReadError<E>> {
     match read_marker(rd)? {
         Marker::FixStr(size) => Ok((size as u32, 1)),
         Marker::Str8 => Ok((read_data_u8(rd)? as u32, 2)),
@@ -107,9 +104,7 @@ fn read_str_len_with_nread<R>(rd: &mut R) -> Result<(u32, usize), ValueReadError
 ///
 /// This function is **unstable**, because it needs review.
 // TODO: Stabilize. Mark error values for each error case (in docs).
-pub fn read_str<'r, R>(rd: &mut R, buf: &'r mut [u8]) -> Result<&'r str, DecodeStringError<'r>>
-where
-    R: Read,
+pub fn read_str<'r, R: Read<E>, E: ReadError>(rd: &mut R, buf: &'r mut [u8]) -> Result<&'r str, DecodeStringError<'r, E>>
 {
     let len = read_str_len(rd)?;
     let ulen = len as usize;
@@ -121,16 +116,12 @@ where
     read_str_data(rd, len, &mut buf[0..ulen])
 }
 
-pub fn read_str_data<'r, R>(rd: &mut R,
-                            len: u32,
-                            buf: &'r mut [u8])
-                            -> Result<&'r str, DecodeStringError<'r>>
-    where R: Read
+pub fn read_str_data<'r, R: Read<E>, E: ReadError>(rd: &mut R, len: u32, buf: &'r mut [u8]) -> Result<&'r str, DecodeStringError<'r, E>>
 {
     debug_assert_eq!(len as usize, buf.len());
 
     // Trying to copy exact `len` bytes.
-    match rd.read_exact(buf) {
+    match rd.read(buf) {
         Ok(()) => {
             match from_utf8(buf) {
                 Ok(decoded) => Ok(decoded),
@@ -139,17 +130,6 @@ pub fn read_str_data<'r, R>(rd: &mut R,
         }
         Err(err) => Err(DecodeStringError::InvalidDataRead(From::from(err))),
     }
-}
-
-/// Attempts to read and decode a string value from the reader, returning a borrowed slice from it.
-///
-// TODO: Also it's possible to implement all borrowing functions for all `BufRead` implementors.
-#[deprecated(since = "0.8.6", note = "useless, use `read_str_from_slice` instead")]
-pub fn read_str_ref(rd: &[u8]) -> Result<&[u8], DecodeStringError<'_>> {
-    let mut cur = io::Cursor::new(rd);
-    let len = read_str_len(&mut cur)?;
-    let start = cur.position() as usize;
-    Ok(&rd[start..start + len as usize])
 }
 
 /// Attempts to read and decode a string value from the reader, returning a borrowed slice from it.
@@ -175,7 +155,7 @@ pub fn read_str_ref(rd: &[u8]) -> Result<&[u8], DecodeStringError<'_>> {
 /// assert_eq!(vec!["Unpacking", "multiple", "strings"], chunks);
 /// ```
 pub fn read_str_from_slice<T: ?Sized + AsRef<[u8]>>(buf: &T) ->
-    Result<(&str, &[u8]), DecodeStringError<'_>>
+    Result<(&str, &[u8]), DecodeStringError<'_, ()>>
 {
     let buf = buf.as_ref();
     let (len, nread) = read_str_len_with_nread(&mut &buf[..])?;

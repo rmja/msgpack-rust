@@ -1,13 +1,4 @@
 //! Provides various functions and structs for MessagePack decoding.
-//!
-//! Most of the function defined in this module will silently handle interruption error (EINTR)
-//! received from the given `Read` to be in consistent state with the `Write::write_all` method in
-//! the standard library.
-//!
-//! Any other error would immediately interrupt the parsing process. If your reader can results in
-//! I/O error and simultaneously be a recoverable state (for example, when reading from
-//! non-blocking socket and it returns EWOULDBLOCK) be sure that you buffer the data externally
-//! to avoid data loss (using `BufRead` readers with manual consuming or some other way).
 
 mod dec;
 mod ext;
@@ -18,41 +9,33 @@ mod uint;
 pub use self::sint::{read_nfix, read_i8, read_i16, read_i32, read_i64};
 pub use self::uint::{read_pfix, read_u8, read_u16, read_u32, read_u64};
 pub use self::dec::{read_f32, read_f64};
-#[allow(deprecated)] // While we re-export deprecated items, we don't want to trigger warnings while compiling this crate
-pub use self::str::{read_str_len, read_str, read_str_from_slice, read_str_ref, DecodeStringError};
+pub use self::str::{read_str_len, read_str, read_str_from_slice, DecodeStringError};
 pub use self::ext::{read_fixext1, read_fixext2, read_fixext4, read_fixext8, read_fixext16, read_ext_meta, ExtMeta};
-
-use std::error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Read;
-
-use byteorder::{self, ReadBytesExt};
 
 use num_traits::cast::FromPrimitive;
 
-use crate::Marker;
-
-/// An error that can occur when attempting to read bytes from the reader.
-pub type Error = ::std::io::Error;
+use crate::{Marker, adapters::{Read, ReadError}};
+use core::fmt;
 
 /// An error that can occur when attempting to read a MessagePack marker from the reader.
 #[derive(Debug)]
-pub struct MarkerReadError(pub Error);
+pub struct MarkerReadError<E: ReadError>(pub E);
 
 /// An error which can occur when attempting to read a MessagePack value from the reader.
 #[derive(Debug)]
-pub enum ValueReadError {
+pub enum ValueReadError<E: ReadError> {
     /// Failed to read the marker.
-    InvalidMarkerRead(Error),
+    InvalidMarkerRead(E),
     /// Failed to read the data.
-    InvalidDataRead(Error),
+    InvalidDataRead(E),
     /// The type decoded isn't match with the expected one.
     TypeMismatch(Marker),
 }
 
-impl error::Error for ValueReadError {
+#[cfg(feature = "std")]
+impl<E: ReadError + std::error::Error> std::error::Error for ValueReadError<E> {
     #[cold]
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             ValueReadError::InvalidMarkerRead(ref err) |
             ValueReadError::InvalidDataRead(ref err) => Some(err),
@@ -61,9 +44,9 @@ impl error::Error for ValueReadError {
     }
 }
 
-impl Display for ValueReadError {
+impl<E: ReadError> fmt::Display for ValueReadError<E> {
     #[cold]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.write_str(match *self {
             ValueReadError::InvalidMarkerRead(..) => "failed to read MessagePack marker",
             ValueReadError::InvalidDataRead(..) => "failed to read MessagePack data",
@@ -74,26 +57,29 @@ impl Display for ValueReadError {
     }
 }
 
-impl From<MarkerReadError> for ValueReadError {
+impl<E: ReadError> From<MarkerReadError<E>> for ValueReadError<E> {
     #[cold]
-    fn from(err: MarkerReadError) -> ValueReadError {
+    fn from(err: MarkerReadError<E>) -> ValueReadError<E> {
         match err {
             MarkerReadError(err) => ValueReadError::InvalidMarkerRead(err),
         }
     }
 }
 
-impl From<Error> for MarkerReadError {
+#[cfg(feature = "std")]
+impl From<std::io::Error> for MarkerReadError<std::io::Error> {
     #[cold]
-    fn from(err: Error) -> MarkerReadError {
+    fn from(err: std::io::Error) -> MarkerReadError<std::io::Error> {
         MarkerReadError(err)
     }
 }
 
 /// Attempts to read a single byte from the given reader and to decode it as a MessagePack marker.
 #[inline]
-pub fn read_marker<R: Read>(rd: &mut R) -> Result<Marker, MarkerReadError> {
-    Ok(Marker::from_u8(rd.read_u8()?))
+pub fn read_marker<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<Marker, MarkerReadError<E>> {
+    let mut buf = [0; 1];
+    rd.read(&mut buf).map_err(MarkerReadError)?;
+    Ok(Marker::from_u8(buf[0]))
 }
 
 /// Attempts to read a single byte from the given reader and to decode it as a nil value.
@@ -112,7 +98,7 @@ pub fn read_marker<R: Read>(rd: &mut R) -> Result<Marker, MarkerReadError> {
 ///
 /// This function will silently retry on every EINTR received from the underlying `Read` until
 /// successful read.
-pub fn read_nil<R: Read>(rd: &mut R) -> Result<(), ValueReadError> {
+pub fn read_nil<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<(), ValueReadError<E>> {
     match read_marker(rd)? {
         Marker::Null => Ok(()),
         marker => Err(ValueReadError::TypeMismatch(marker)),
@@ -136,7 +122,7 @@ pub fn read_nil<R: Read>(rd: &mut R) -> Result<(), ValueReadError> {
 ///
 /// This function will silently retry on every EINTR received from the underlying `Read` until
 /// successful read.
-pub fn read_bool<R: Read>(rd: &mut R) -> Result<bool, ValueReadError> {
+pub fn read_bool<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<bool, ValueReadError<E>> {
     match read_marker(rd)? {
         Marker::True => Ok(true),
         Marker::False => Ok(false),
@@ -146,19 +132,20 @@ pub fn read_bool<R: Read>(rd: &mut R) -> Result<bool, ValueReadError> {
 
 /// An error which can occur when attempting to read a MessagePack numeric value from the reader.
 #[derive(Debug)]
-pub enum NumValueReadError {
+pub enum NumValueReadError<E: ReadError> {
     /// Failed to read the marker.
-    InvalidMarkerRead(Error),
+    InvalidMarkerRead(E),
     /// Failed to read the data.
-    InvalidDataRead(Error),
+    InvalidDataRead(E),
     /// The type decoded isn't match with the expected one.
     TypeMismatch(Marker),
     /// Out of range integral type conversion attempted.
     OutOfRange,
 }
 
-impl error::Error for NumValueReadError {
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+#[cfg(feature = "std")]
+impl<E: ReadError + std::error::Error> std::error::Error for NumValueReadError<E> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             NumValueReadError::InvalidMarkerRead(ref err) |
             NumValueReadError::InvalidDataRead(ref err) => Some(err),
@@ -168,8 +155,8 @@ impl error::Error for NumValueReadError {
     }
 }
 
-impl Display for NumValueReadError {
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+impl<E: ReadError> fmt::Display for NumValueReadError<E> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.write_str(match *self {
             NumValueReadError::InvalidMarkerRead(..) => "failed to read MessagePack marker",
             NumValueReadError::InvalidDataRead(..) => "failed to read MessagePack data",
@@ -181,18 +168,18 @@ impl Display for NumValueReadError {
     }
 }
 
-impl From<MarkerReadError> for NumValueReadError {
+impl<E: ReadError> From<MarkerReadError<E>> for NumValueReadError<E> {
     #[cold]
-    fn from(err: MarkerReadError) -> NumValueReadError {
+    fn from(err: MarkerReadError<E>) -> NumValueReadError<E> {
         match err {
             MarkerReadError(err) => NumValueReadError::InvalidMarkerRead(err),
         }
     }
 }
 
-impl From<ValueReadError> for NumValueReadError {
+impl<E: ReadError> From<ValueReadError<E>> for NumValueReadError<E> {
     #[cold]
-    fn from(err: ValueReadError) -> NumValueReadError {
+    fn from(err: ValueReadError<E>) -> NumValueReadError<E> {
         match err {
             ValueReadError::InvalidMarkerRead(err) => NumValueReadError::InvalidMarkerRead(err),
             ValueReadError::InvalidDataRead(err) => NumValueReadError::InvalidDataRead(err),
@@ -205,62 +192,82 @@ impl From<ValueReadError> for NumValueReadError {
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_u8<R: Read>(rd: &mut R) -> Result<u8, ValueReadError> {
-    rd.read_u8().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_u8<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u8, ValueReadError<E>> {
+    let mut buf = [0; 1];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(buf[0])
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_u16<R: Read>(rd: &mut R) -> Result<u16, ValueReadError> {
-    rd.read_u16::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_u16<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u16, ValueReadError<E>> {
+    let mut buf = [0; 2];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(u16::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_u32<R: Read>(rd: &mut R) -> Result<u32, ValueReadError> {
-    rd.read_u32::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_u32<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u32, ValueReadError<E>> {
+    let mut buf = [0; 4];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(u32::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_u64<R: Read>(rd: &mut R) -> Result<u64, ValueReadError> {
-    rd.read_u64::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_u64<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u64, ValueReadError<E>> {
+    let mut buf = [0; 8];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(u64::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_i8<R: Read>(rd: &mut R) -> Result<i8, ValueReadError> {
-    rd.read_i8().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_i8<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<i8, ValueReadError<E>> {
+    let mut buf = [0; 1];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(i8::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_i16<R: Read>(rd: &mut R) -> Result<i16, ValueReadError> {
-    rd.read_i16::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_i16<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<i16, ValueReadError<E>> {
+    let mut buf = [0; 2];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(i16::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_i32<R: Read>(rd: &mut R) -> Result<i32, ValueReadError> {
-    rd.read_i32::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_i32<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<i32, ValueReadError<E>> {
+    let mut buf = [0; 4];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(i32::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_i64<R: Read>(rd: &mut R) -> Result<i64, ValueReadError> {
-    rd.read_i64::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_i64<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<i64, ValueReadError<E>> {
+    let mut buf = [0; 8];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(i64::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_f32<R: Read>(rd: &mut R) -> Result<f32, ValueReadError> {
-    rd.read_f32::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_f32<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<f32, ValueReadError<E>> {
+    let mut buf = [0; 4];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(f32::from_be_bytes(buf))
 }
 
 #[doc(hidden)]
 #[inline]
-pub fn read_data_f64<R: Read>(rd: &mut R) -> Result<f64, ValueReadError> {
-    rd.read_f64::<byteorder::BigEndian>().map_err(ValueReadError::InvalidDataRead)
+pub fn read_data_f64<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<f64, ValueReadError<E>> {
+    let mut buf = [0; 8];
+    rd.read(&mut buf).map_err(ValueReadError::InvalidDataRead)?;
+    Ok(f64::from_be_bytes(buf))
 }
 
 /// Attempts to read up to 9 bytes from the given reader and to decode them as integral `T` value.
@@ -293,7 +300,7 @@ pub fn read_data_f64<R: Read>(rd: &mut R) -> Result<f64, ValueReadError> {
 /// assert_eq!(300usize, rmp::decode::read_int(&mut &buf[..]).unwrap());
 /// assert_eq!(300isize, rmp::decode::read_int(&mut &buf[..]).unwrap());
 /// ```
-pub fn read_int<T: FromPrimitive, R: Read>(rd: &mut R) -> Result<T, NumValueReadError> {
+pub fn read_int<T: FromPrimitive, R: Read<E>, E: ReadError>(rd: &mut R) -> Result<T, NumValueReadError<E>> {
     let val = match read_marker(rd)? {
         Marker::FixPos(val) => T::from_u8(val),
         Marker::FixNeg(val) => T::from_i8(val),
@@ -323,9 +330,7 @@ pub fn read_int<T: FromPrimitive, R: Read>(rd: &mut R) -> Result<T, NumValueRead
 /// successful read.
 // TODO: Docs.
 // NOTE: EINTR is managed internally.
-pub fn read_array_len<R>(rd: &mut R) -> Result<u32, ValueReadError>
-where
-    R: Read,
+pub fn read_array_len<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u32, ValueReadError<E>>
 {
     match read_marker(rd)? {
         Marker::FixArray(size) => Ok(size as u32),
@@ -346,12 +351,12 @@ where
 /// This function will silently retry on every EINTR received from the underlying `Read` until
 /// successful read.
 // TODO: Docs.
-pub fn read_map_len<R: Read>(rd: &mut R) -> Result<u32, ValueReadError> {
+pub fn read_map_len<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u32, ValueReadError<E>> {
     let marker = read_marker(rd)?;
     marker_to_len(rd, marker)
 }
 
-pub fn marker_to_len<R: Read>(rd: &mut R, marker: Marker) -> Result<u32, ValueReadError> {
+pub fn marker_to_len<R: Read<E>, E: ReadError>(rd: &mut R, marker: Marker) -> Result<u32, ValueReadError<E>> {
     match marker {
         Marker::FixMap(size) => Ok(size as u32),
         Marker::Map16 => Ok(read_data_u16(rd)? as u32),
@@ -367,7 +372,7 @@ pub fn marker_to_len<R: Read>(rd: &mut R, marker: Marker) -> Result<u32, ValueRe
 /// This function will silently retry on every EINTR received from the underlying `Read` until
 /// successful read.
 // TODO: Docs.
-pub fn read_bin_len<R: Read>(rd: &mut R) -> Result<u32, ValueReadError> {
+pub fn read_bin_len<R: Read<E>, E: ReadError>(rd: &mut R) -> Result<u32, ValueReadError<E>> {
     match read_marker(rd)? {
         Marker::Bin8 => Ok(read_data_u8(rd)? as u32),
         Marker::Bin16 => Ok(read_data_u16(rd)? as u32),

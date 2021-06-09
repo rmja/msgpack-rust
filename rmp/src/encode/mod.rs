@@ -15,30 +15,23 @@ pub use self::dec::{write_f32, write_f64};
 pub use self::str::{write_str_len, write_str};
 pub use self::bin::{write_bin_len, write_bin};
 
-use std::error;
-use std::fmt::{self, Display, Formatter};
-use std::io::Write;
-
-use byteorder::{self, WriteBytesExt};
-
-use crate::Marker;
-
-/// The error type for I/O operations of the `Write` and associated traits.
-pub type Error = ::std::io::Error;
+use crate::{Marker, adapters::{Write, WriteError}};
+use core::fmt;
 
 // An error returned from the `write_marker` and `write_fixval` functions.
-struct MarkerWriteError(Error);
+struct MarkerWriteError<E: WriteError>(pub E);
 
-impl From<Error> for MarkerWriteError {
+impl<E: WriteError> From<E> for MarkerWriteError<E> {
     #[cold]
-    fn from(err: Error) -> MarkerWriteError {
+    fn from(err: E) -> MarkerWriteError<E> {
         MarkerWriteError(err)
     }
 }
 
-impl From<MarkerWriteError> for Error {
+#[cfg(feature = "std")]
+impl<E: WriteError> From<MarkerWriteError<E>> for std::io::Error {
     #[cold]
-    fn from(err: MarkerWriteError) -> Error {
+    fn from(err: MarkerWriteError<E>) -> std::io::Error {
         match err {
             MarkerWriteError(err) => err
         }
@@ -46,25 +39,26 @@ impl From<MarkerWriteError> for Error {
 }
 
 /// Attempts to write the given marker into the writer.
-fn write_marker<W: Write>(wr: &mut W, marker: Marker) -> Result<(), MarkerWriteError> {
-    wr.write_u8(marker.to_u8()).map_err(MarkerWriteError)
+fn write_marker<W: Write<E>, E: WriteError>(wr: &mut W, marker: Marker) -> Result<(), MarkerWriteError<E>> {
+    wr.write(&[marker.to_u8()]).map_err(MarkerWriteError)
 }
 
 /// An error returned from primitive values write functions.
-struct DataWriteError(Error);
+struct DataWriteError<E: WriteError>(E);
 
-impl From<Error> for DataWriteError {
+impl<E: WriteError> From<E> for DataWriteError<E> {
     #[cold]
     #[inline]
-    fn from(err: Error) -> DataWriteError {
+    fn from(err: E) -> DataWriteError<E> {
         DataWriteError(err)
     }
 }
 
-impl From<DataWriteError> for Error {
+#[cfg(feature = "std")]
+impl<E: WriteError> From<DataWriteError<E>> for std::io::Error {
     #[cold]
     #[inline]
-    fn from(err: DataWriteError) -> Error {
+    fn from(err: DataWriteError) -> std::io::Error {
         err.0
     }
 }
@@ -87,8 +81,8 @@ impl From<DataWriteError> for Error {
 /// assert_eq!(vec![0xc0], buf);
 /// ```
 #[inline]
-pub fn write_nil<W: Write>(wr: &mut W) -> Result<(), Error> {
-    write_marker(wr, Marker::Null).map_err(From::from)
+pub fn write_nil<W: Write<E>, E: WriteError>(wr: &mut W) -> Result<(), E> {
+    write_marker(wr, Marker::Null).map_err(|e| e.0)
 }
 
 /// Encodes and attempts to write a bool value into the given write.
@@ -101,96 +95,97 @@ pub fn write_nil<W: Write>(wr: &mut W) -> Result<(), Error> {
 /// Each call to this function may generate an I/O error indicating that the operation could not be
 /// completed.
 #[inline]
-pub fn write_bool<W: Write>(wr: &mut W, val: bool) -> Result<(), Error> {
+pub fn write_bool<W: Write<E>, E: WriteError>(wr: &mut W, val: bool) -> Result<(), E> {
     let marker = if val {
         Marker::True
     } else {
         Marker::False
     };
 
-    write_marker(wr, marker).map_err(From::from)
+    write_marker(wr, marker).map_err(|e| e.0)
 }
 
 #[inline]
-fn write_data_u8<W: Write>(wr: &mut W, val: u8) -> Result<(), DataWriteError> {
-    wr.write_u8(val).map_err(DataWriteError)
+fn write_data_u8<W: Write<E>, E: WriteError>(wr: &mut W, val: u8) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_u16<W: Write>(wr: &mut W, val: u16) -> Result<(), DataWriteError> {
-    wr.write_u16::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_u16<W: Write<E>, E: WriteError>(wr: &mut W, val: u16) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_u32<W: Write>(wr: &mut W, val: u32) -> Result<(), DataWriteError> {
-    wr.write_u32::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_u32<W: Write<E>, E: WriteError>(wr: &mut W, val: u32) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_u64<W: Write>(wr: &mut W, val: u64) -> Result<(), DataWriteError> {
-    wr.write_u64::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_u64<W: Write<E>, E: WriteError>(wr: &mut W, val: u64) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_i8<W: Write>(wr: &mut W, val: i8) -> Result<(), DataWriteError> {
-    wr.write_i8(val).map_err(DataWriteError)
+fn write_data_i8<W: Write<E>, E: WriteError>(wr: &mut W, val: i8) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_i16<W: Write>(wr: &mut W, val: i16) -> Result<(), DataWriteError> {
-    wr.write_i16::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_i16<W: Write<E>, E: WriteError>(wr: &mut W, val: i16) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_i32<W: Write>(wr: &mut W, val: i32) -> Result<(), DataWriteError> {
-    wr.write_i32::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_i32<W: Write<E>, E: WriteError>(wr: &mut W, val: i32) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_i64<W: Write>(wr: &mut W, val: i64) -> Result<(), DataWriteError> {
-    wr.write_i64::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_i64<W: Write<E>, E: WriteError>(wr: &mut W, val: i64) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_f32<W: Write>(wr: &mut W, val: f32) -> Result<(), DataWriteError> {
-    wr.write_f32::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_f32<W: Write<E>, E: WriteError>(wr: &mut W, val: f32) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 #[inline]
-fn write_data_f64<W: Write>(wr: &mut W, val: f64) -> Result<(), DataWriteError> {
-    wr.write_f64::<byteorder::BigEndian>(val).map_err(DataWriteError)
+fn write_data_f64<W: Write<E>, E: WriteError>(wr: &mut W, val: f64) -> Result<(), DataWriteError<E>> {
+    wr.write(&val.to_be_bytes()).map_err(DataWriteError)
 }
 
 /// An error that can occur when attempting to write multi-byte MessagePack value.
 #[derive(Debug)]
-pub enum ValueWriteError {
+pub enum ValueWriteError<E: WriteError> {
     /// I/O error while writing marker.
-    InvalidMarkerWrite(Error),
+    InvalidMarkerWrite(E),
     /// I/O error while writing data.
-    InvalidDataWrite(Error),
+    InvalidDataWrite(E),
 }
 
-impl From<MarkerWriteError> for ValueWriteError {
+impl<E: WriteError> From<MarkerWriteError<E>> for ValueWriteError<E> {
     #[cold]
-    fn from(err: MarkerWriteError) -> ValueWriteError {
+    fn from(err: MarkerWriteError<E>) -> ValueWriteError<E> {
         match err {
             MarkerWriteError(err) => ValueWriteError::InvalidMarkerWrite(err),
         }
     }
 }
 
-impl From<DataWriteError> for ValueWriteError {
+impl<E: WriteError> From<DataWriteError<E>> for ValueWriteError<E> {
     #[cold]
-    fn from(err: DataWriteError) -> ValueWriteError {
+    fn from(err: DataWriteError<E>) -> ValueWriteError<E> {
         match err {
             DataWriteError(err) => ValueWriteError::InvalidDataWrite(err),
         }
     }
 }
 
-impl From<ValueWriteError> for Error {
+#[cfg(feature = "std")]
+impl From<ValueWriteError<std::io::Error>> for std::io::Error {
     #[cold]
-    fn from(err: ValueWriteError) -> Error {
+    fn from(err: ValueWriteError<std::io::Error>) -> std::io::Error {
         match err {
             ValueWriteError::InvalidMarkerWrite(err) |
             ValueWriteError::InvalidDataWrite(err) => err,
@@ -198,9 +193,10 @@ impl From<ValueWriteError> for Error {
     }
 }
 
-impl error::Error for ValueWriteError {
+#[cfg(feature = "std")]
+impl<E: WriteError + std::error::Error> std::error::Error for ValueWriteError<E> {
     #[cold]
-    fn source(&self) -> Option<&(dyn error::Error + 'static)> {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match *self {
             ValueWriteError::InvalidMarkerWrite(ref err) |
             ValueWriteError::InvalidDataWrite(ref err) => Some(err),
@@ -208,9 +204,9 @@ impl error::Error for ValueWriteError {
     }
 }
 
-impl Display for ValueWriteError {
+impl<E: WriteError> fmt::Display for ValueWriteError<E> {
     #[cold]
-    fn fmt(&self, f: &mut Formatter<'_>) -> Result<(), fmt::Error> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> Result<(), fmt::Error> {
         f.write_str("error while writing multi-byte MessagePack value")
     }
 }
@@ -222,7 +218,7 @@ impl Display for ValueWriteError {
 ///
 /// This function will return `ValueWriteError` on any I/O error occurred while writing either the
 /// marker or the data.
-pub fn write_array_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError> {
+pub fn write_array_len<W: Write<E>, E: WriteError>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError<E>> {
     let marker = if len < 16 {
         write_marker(wr, Marker::FixArray(len as u8))?;
         Marker::FixArray(len as u8)
@@ -246,7 +242,7 @@ pub fn write_array_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWr
 ///
 /// This function will return `ValueWriteError` on any I/O error occurred while writing either the
 /// marker or the data.
-pub fn write_map_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError> {
+pub fn write_map_len<W: Write<E>, E: WriteError>(wr: &mut W, len: u32) -> Result<Marker, ValueWriteError<E>> {
     let marker = if len < 16 {
         write_marker(wr, Marker::FixMap(len as u8))?;
         Marker::FixMap(len as u8)
@@ -275,7 +271,7 @@ pub fn write_map_len<W: Write>(wr: &mut W, len: u32) -> Result<Marker, ValueWrit
 ///
 /// Panics if `ty` is negative, because it is reserved for future MessagePack extension including
 /// 2-byte type information.
-pub fn write_ext_meta<W: Write>(wr: &mut W, len: u32, ty: i8) -> Result<Marker, ValueWriteError> {
+pub fn write_ext_meta<W: Write<E>, E: WriteError>(wr: &mut W, len: u32, ty: i8) -> Result<Marker, ValueWriteError<E>> {
     let marker = match len {
         1 => {
             write_marker(wr, Marker::FixExt1)?;
